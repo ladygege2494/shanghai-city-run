@@ -91,57 +91,88 @@ export class RecommendationEngine {
   // 加载用户数据
   async loadUserData(): Promise<void> {
     try {
+      console.log('尝试加载用户数据...');
+      
+      // 设置超时保护，3秒后自动放弃数据库查询
+      const timeout = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('数据库查询超时')), 3000)
+      );
+
       // 加载用户偏好
-      const { data: preferences } = await supabase
+      const preferencesPromise = supabase
         .from('user_preferences')
         .select('*')
         .eq('user_id', this.userId)
-        .single();
+        .single()
+        .then(({ data }) => data);
 
+      const preferences = await Promise.race([preferencesPromise, timeout]).catch(() => null);
       this.userProfile = preferences;
 
       // 加载用户活动统计
-      const { data: activity } = await supabase
+      const activityPromise = supabase
         .from('user_activity_stats')
         .select('*')
         .eq('user_id', this.userId)
-        .single();
+        .single()
+        .then(({ data }) => data);
 
+      const activity = await Promise.race([activityPromise, timeout]).catch(() => null);
       this.userActivity = activity;
 
       // 加载跑步历史（最近30次）
-      const { data: history } = await supabase
+      const historyPromise = supabase
         .from('running_history')
         .select('*')
         .eq('user_id', this.userId)
         .order('completed_at', { ascending: false })
-        .limit(30);
+        .limit(30)
+        .then(({ data }) => data || [] as RunningHistory[]);
 
-      this.runningHistory = history || [];
+      this.runningHistory = await Promise.race([historyPromise, timeout])
+        .catch(() => [] as RunningHistory[]) as RunningHistory[];
+
+      console.log('用户数据加载完成（可能使用默认值）');
     } catch (error) {
-      console.error('加载用户数据失败:', error);
+      console.warn('加载用户数据失败，使用默认值:', error);
+      this.userProfile = null;
+      this.userActivity = null;
+      this.runningHistory = [];
     }
   }
 
   // 获取所有路线
   async getAllRoutes(): Promise<Route[]> {
     try {
-      const { data, error } = await supabase
+      console.log('获取路线数据...');
+      
+      // 设置3秒超时
+      const timeout = new Promise<never>((_, reject) => 
+        setTimeout(() => reject(new Error('获取路线超时')), 3000)
+      );
+
+      const routesPromise = supabase
         .from('routes')
         .select('*')
-        .order('avg_rating', { ascending: false });
+        .order('avg_rating', { ascending: false })
+        .then(({ data, error }) => {
+          if (error) throw error;
+          return data;
+        });
 
-      if (error) throw error;
+      const data = await Promise.race([routesPromise, timeout]).catch(() => null);
       
       // 如果数据库中有数据，返回数据库数据
       if (data && data.length > 0) {
+        console.log('使用数据库路线数据');
         return data;
       }
       
-      // 如果数据库中没有数据，返回模拟数据
+      // 如果数据库中没有数据或查询失败，返回模拟数据
+      console.log('使用模拟路线数据');
       return this.getFallbackRoutes();
     } catch (error) {
-      console.error('获取路线数据失败:', error);
+      console.warn('获取路线数据失败，使用模拟数据:', error);
       // 出错时返回模拟数据
       return this.getFallbackRoutes();
     }
